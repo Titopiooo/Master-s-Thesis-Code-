@@ -1,39 +1,32 @@
 /****************************************************************************************
-Project: Regional inequalities in health outcomes (Italy) – Concentration Index & Decomposition
+Project: Regional inequalities in health outcomes in Italy
+Purpose: Replication file for concentration index, decomposition, indirect standardization,
+         and robustness / IV analysis
 Dataset: fintemplate.dta
-Unit of analysis: region-year (2010–2019 pooled)
-N expected: 210 (21 regions x 10 years)
+Unit of analysis: Region-year
+Period: 2010–2019
+Software: Stata
 
-Outcome (y):
-- mortstd  = Standardized mortality rate (age-standardised), by region-year
+Description:
+This do-file computes the concentration index of mortality, decomposes inequality into
+its observable determinants, performs yearly robustness checks, indirectly standardizes
+mortality for need variables, and estimates robustness and IV models for healthcare
+expenditure.
 
-Ranking variable (SES):
-- gdp      = GDP per capita (used to rank observations from poorer to richer)
-
-Explanatory variables (x):
-- share65plus        = Share of population aged 65+
-- pct_degree         = Share of population with tertiary education (degree)
-- chroniccondition   = Proxy for health need / chronic conditions prevalence (region-year)
-- LEAscore           = LEA monitoring score (region-year)
-- piano_rientro      = Dummy for "Piano di rientro" (region-year; 0/1)
-- healthcareexpend   = Public healthcare expenditure per capita (region-year)
-
-Core idea:
-1) Compute fractional rank by GDP (fracrank)
-2) Compute CI of mortality (CI_y)
-3) Run linear model to get betas (association, not causal)
-4) For each x, compute CI_x and elasticity, then contribution = elasticity * CI_x
-5) Check that sum(contributions) approx CI_y (residual captures unexplained part)
-
+Note:
+The dataset is not publicly included in the repository. Users should place
+"fintemplate.dta" in the working directory before running the file.
 ****************************************************************************************/
 
 clear all
 set more off
 
+* Optional: set your own working directory before running the file
+* cd "your/path/here"
+
 *------------------------------------------------------------------------------
 * 0) Load data
 *------------------------------------------------------------------------------
-* >>> EDIT PATH <<<
 use "fintemplate.dta", clear
 
 * Quick sanity checks
@@ -71,34 +64,24 @@ display "Mean(y) mu_y = " mu_y
 display "cov(y, fracrank) = " cov_y
 display "CI_y (mortstd) = " CI_y
 
-* (CI_y was negative: around -0.02316548)
-
 *------------------------------------------------------------------------------
 * 3) Regression model (pooled 2010–2019)
 *    NOTE: Used for decomposition coefficients; not interpreted as causal.
 *------------------------------------------------------------------------------
 reg mortstd share65plus chroniccondition pct_degree LEAscore piano_rientro healthcareexpend
 
-* Optional: multicollinearity check (mean VIF ~ 2.16)
+* Optional: multicollinearity check
 vif
 
 *------------------------------------------------------------------------------
-* 4) Store beta coefficients from the regression 
-*      share65plus      =  42.3776
-*      chroniccondition =  -0.2048439
-*      pct_degree       = -51.21992
-*      LEAscore         =  -0.0612138
-*      piano_rientro    =   3.26616
-*      healthcareexpend =  -0.0158277
-*
+* 4) Store regression coefficients for the decomposition
 *------------------------------------------------------------------------------
-scalar b_share65 =  42.3776
-scalar b_chronic =  -0.2048439
-scalar b_degree  = -51.21992
-scalar b_lea     =  -0.0612138
-scalar b_pr      =   3.26616
-scalar b_exp     =  -0.0158277
-
+scalar b_share65 = _b[share65plus]
+scalar b_chronic = _b[chroniccondition]
+scalar b_degree  = _b[pct_degree]
+scalar b_lea     = _b[LEAscore]
+scalar b_pr      = _b[piano_rientro]
+scalar b_exp     = _b[healthcareexpend]
 
 *------------------------------------------------------------------------------
 * 5) Decomposition pieces for each x:
@@ -229,7 +212,6 @@ display "=============================="
 * DIAGNOSTIC: Is inequality driven by CI or elasticity?
 ********************************************************************************
 
-* totale per confronto
 scalar tot_CI = abs(CI_exp) + abs(CI_deg) + abs(CI_lea) + abs(CI_pr) + abs(CI_65) + abs(CI_ch)
 scalar tot_elas = abs(elas_exp) + abs(elas_deg) + abs(elas_lea) + abs(elas_pr) + abs(elas_65) + abs(elas_ch)
 
@@ -332,6 +314,7 @@ foreach t in 2010 2015 2019 {
 
     restore
 }
+
 ********************************************************************************
 * ROBUSTNESS CHECK: Concentration Index of mortality by year (2010–2019)
 ********************************************************************************
@@ -383,16 +366,19 @@ list, clean
 * FIGURE: Yearly concentration index of mortality (Italy, 2010–2019)
 ********************************************************************************
 
-twoway line CI_year year, xtitle("Year") ytitle("Concentration index of mortality") title("Yearly concentration index of mortality (Italy, 2010–2019)") xlabel(2010(1)2019) yline(0)
+twoway line CI_year year, ///
+    xtitle("Year") ///
+    ytitle("Concentration index of mortality") ///
+    title("Yearly concentration index of mortality (Italy, 2010–2019)") ///
+    xlabel(2010(1)2019) ///
+    yline(0)
 
-graph save "/Users/potitofares/DATI_TESI/Concentration_index_graph.gph", replace
+graph save "Concentration_index_graph.gph", replace
 
 restore
+
 ************************************************
-* Decomposition bar chart.  (idk if i WILL INCLUDE IT OR NOT I WAS JUST TRYING SOMETHING)
-* This section builds a temporary dataset with
-* the percentage contribution of each determinant
-* to the concentration index of mortality.
+* Optional bar chart of percentage contributions from the decomposition
 ************************************************
 
 preserve
@@ -464,34 +450,7 @@ display "Original CI = " CI_y
 display "Indirectly standardized CI (inequity) = " CI_IS
 
 ********************************************************************************
-* CAUSAL ANALYSIS: IV approach using lagged healthcare expenditure
-********************************************************************************
-
-preserve
-
-* Declare panel structure
-encode region, gen(region_id)
-xtset region_id year
-
-* Create one-year lag of healthcare expenditure
-gen L_exp = L.healthcareexpend
-
-* Check how many observations are available for the IV regression
-summ L_exp
-
-* Baseline OLS model with year fixed effects
-reg mortstd healthcareexpend share65plus chroniccondition pct_degree LEAscore piano_rientro i.year, vce(cluster region_id)
-
-* IV model: healthcare expenditure instrumented with its one-year lag
-ivregress 2sls mortstd (healthcareexpend = L_exp) share65plus chroniccondition pct_degree LEAscore piano_rientro i.year, vce(cluster region_id)
-
-* First-stage diagnostics
-estat firststage
-
-restore
-
-********************************************************************************
-* ADDITIONAL ROBUSTNESS TABLES: OLS FULL SAMPLE, OLS IV SAMPLE, AND IV MODEL
+* ROBUSTNESS AND INSTRUMENTAL VARIABLE ANALYSIS
 * This section reproduces the final regressions reported in Table 6 / Appendix A1
 ********************************************************************************
 
@@ -523,7 +482,7 @@ reg mortstd healthcareexpend share65plus chroniccondition pct_degree LEAscore pi
 
 *------------------------------------------------------------------------------
 * 4) IV regression - healthcare expenditure instrumented with one-year lag
-*    Same sample as column (2), with year fixed effects and clustered SEs
+*    Same sample as column (3), with year fixed effects and clustered standard errors
 *------------------------------------------------------------------------------
 ivregress 2sls mortstd (healthcareexpend = L_exp) share65plus chroniccondition pct_degree LEAscore piano_rientro i.year if !missing(L_exp), vce(cluster region_id)
 
@@ -533,9 +492,11 @@ ivregress 2sls mortstd (healthcareexpend = L_exp) share65plus chroniccondition p
 estat firststage
 
 restore
+
 ********************************************************************************
-* END OF ADDITIONAL ROBUSTNESS SECTION
+* END OF ROBUSTNESS AND IV ANALYSIS
 ********************************************************************************
+
 ********************************************************************************
 * End of do-file
-****************************************************************************************/
+********************************************************************************
